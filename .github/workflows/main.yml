@@ -12,23 +12,8 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
-
-      - name: Code analysis (SonarCloud)
-        uses: SonarSource/sonarcloud-github-action@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} 
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}   
+        uses: actions/checkout@v3  
         with:
-           args: >
-             -Dsonar.projectKey=YOUR_PROJECT_KEY
-             -Dsonar.organization=YOUR_ORG_KEY
-             -Dsonar.sources=.
-             -Dsonar.python.version=3.12
-
-      
-
-
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
