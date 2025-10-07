@@ -1,0 +1,7 @@
+project          = "foodapp"
+aws_region       = "eu-central-1"
+instance_type    = "t3.small"
+key_name         = "my-key"             
+vpc_id           = "vpc-0123456789abcdef0"
+public_subnet_id = "subnet-0123456789abcdef0"
+allow_ssh_cidr   = "0.0.0.0/0"             

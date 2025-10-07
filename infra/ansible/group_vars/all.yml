@@ -1,0 +1,3 @@
+ecr_repo_url: "{{ lookup('env','ECR_REPO_URL') | default('') }}"
+app_image_tag: "latest"
+server_name: "_"          # եթե ունես domain, դնիք example.com

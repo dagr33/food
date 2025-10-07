@@ -1,0 +1,61 @@
+---
+- hosts: web
+  become: true
+  vars:
+    docker_compose_version: "v2.29.2"
+  tasks:
+    - name: Install deps
+      package:
+        name:
+          - docker
+          - git
+        state: present
+
+    - name: Enable & start docker
+      service:
+        name: docker
+        state: started
+        enabled: true
+
+    - name: Install docker-compose plugin
+      get_url:
+        url: "https://github.com/docker/compose/releases/download/{{ docker_compose_version }}/docker-compose-linux-x86_64"
+        dest: /usr/local/bin/docker-compose
+        mode: '0755'
+
+    - name: Create app dir
+      file:
+        path: /opt/app
+        state: directory
+        mode: '0755'
+
+    - name: Copy docker-compose
+      copy:
+        src: files/docker-compose.yml
+        dest: /opt/app/docker-compose.yml
+        mode: '0644'
+
+    - name: Copy nginx.conf
+      copy:
+        src: files/nginx.conf
+        dest: /opt/app/nginx.conf
+        mode: '0644'
+
+    - name: Login to ECR (via instance IAM role)
+      shell: |
+        aws --region {{ lookup('env','AWS_REGION') | default('eu-central-1') }} ecr get-login-password \
+          | docker login --username AWS --password-stdin {{ ecr_repo_url | regex_replace('/.*$','') }}
+      args:
+        executable: /bin/bash
+
+    - name: Pull images
+      shell: |
+        docker compose -f /opt/app/docker-compose.yml pull
+      args:
+        executable: /bin/bash
+
+    - name: Up containers
+      shell: |
+        docker compose -f /opt/app/docker-compose.yml up -d
+      args:
+        executable: /bin/bash
