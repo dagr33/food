@@ -19,6 +19,14 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} 
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}   
+        with:
+           args: >
+             -Dsonar.projectKey=YOUR_PROJECT_KEY
+             -Dsonar.organization=YOUR_ORG_KEY
+             -Dsonar.sources=.
+             -Dsonar.python.version=3.12
+
+      
 
 
       - name: Set up Python
