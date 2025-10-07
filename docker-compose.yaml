@@ -1,0 +1,38 @@
+version: '3.8'
+
+services:
+  backend:
+    image: your-backend-image:latest
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "5174:5174"
+    environment:
+      - DATABASE_URL=postgres://user:password@db:5432/food_delivery
+    depends_on:
+      - db
+
+  frontend:
+    image: your-frontend-image:latest
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "5173:5173"
+    depends_on:
+      - backend
+
+  db:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: food_delivery
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    ports:
+      - "3000:3000"
+
+volumes:
+  db_data:
