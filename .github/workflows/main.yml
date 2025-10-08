@@ -37,8 +37,7 @@ jobs:
         with:
           scan-type: 'fs'
           scan-ref: '.'
-          trivy-config: trivy.yaml
-  AWS:      
+          trivy-config: trivy.yaml      
       - name: Configure AWS
         uses: aws-actions/configure-aws-credentials@v4
         with:
