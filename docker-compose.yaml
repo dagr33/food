@@ -1,38 +1,47 @@
-version: '3.8'
+version: "3.8"
 
-services:
-  backend:
-    image: your-backend-image:latest
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
-    ports:
-      - "5174:5174"
-    environment:
-      - DATABASE_URL=postgres://user:password@db:5432/food_delivery
-    depends_on:
-      - db
-
-  frontend:
-    image: your-frontend-image:latest
-    build:
-      context: ./frontend
-      dockerfile: Dockerfile
-    ports:
-      - "5173:5173"
-    depends_on:
-      - backend
-
-  db:
-    image: postgres:15
-    environment:
-      POSTGRES_USER: user
-      POSTGRES_PASSWORD: password
-      POSTGRES_DB: food_delivery
-    volumes:
-      - db_data:/var/lib/postgresql/data
-    ports:
-      - "3000:3000"
+networks:
+  appnet:
 
 volumes:
   db_data:
+
+services:
+  db:
+    image: postgres:15
+    restart: always
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-password}
+      POSTGRES_DB: ${POSTGRES_DB:-food_delivery}
+    ports:
+      - "5432:5432"   
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks: [appnet]
+
+  backend:
+    image: ${ECR_REPO_URL}:backend-latest  
+    restart: always
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file:
+      - .env
+    ports:
+      - "4000:4000"    
+    networks: [appnet]
+
+  frontend:
+    image: ${ECR_REPO_URL}:frontend-latest  
+    restart: always
+    depends_on:
+      - backend
+    ports:
+      - "80:80"        
+    networks: [appnet]
