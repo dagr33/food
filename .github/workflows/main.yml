@@ -1,55 +1,89 @@
-name: CI-CD Pipeline
+name: Build & Deploy to EC2
+
 on:
   push:
-    branches: [ "main" ]
-  pull_request:
-    branches: [ "main" ]
+    branches: ["main"]
+
+env:
+  REGION: ${{ secrets.AWS_REGION }}
+  REPO:   ${{ secrets.ECR_REPO_URL }}   # օրինակ: 123456789012.dkr.ecr.eu-central-1.amazonaws.com/myapp
+  EC2_DIR: /opt/app
+
 jobs:
-  build:
+  build-and-push:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v3  
-        
-      - name: Set up Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: "3.12"
-          
-      - name: Install Flask
-        run: |
-          python -m pip install --upgrade pip
-          pip install flask pytest
-          
-      - name: Run tests
-        run: |
-          pytest || echo "No tests found"
-          
-  docker:
-    runs-on: ubuntu-latest
-    needs: build
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v3
-        
-      - name: Run Trivy vulnerability scan
-        uses: aquasecurity/trivy-action@0.28.0
-        with:
-          scan-type: 'fs'
-          scan-ref: '.'
-          trivy-config: trivy.yaml      
-      - name: Configure AWS
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS creds
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-reg: ${{ secrets.AWS_REG }}
-          
+          aws-region:            ${{ secrets.AWS_REGION }}
+
       - name: Login to ECR
         uses: aws-actions/amazon-ecr-login@v2
-        
-      - name: Build & push
+
+      # Backend image
+      - name: Build & push backend
         run: |
-          IMAGE=${{ secrets.ECR_REPO_URL }}:latest
-          docker build -t $IMAGE .
-          docker push $IMAGE
+          docker build -t $REPO:backend-latest ./backend
+          docker push $REPO:backend-latest
+
+      # Frontend image (եթե front-ը container-ով ես տալիս)
+      - name: Build & push frontend
+        if: ${{ hashFiles('frontend/**') != '' }}
+        run: |
+          docker build -t $REPO:frontend-latest ./frontend
+          docker push $REPO:frontend-latest
+
+  deploy:
+    runs-on: ubuntu-latest
+    needs: build-and-push
+    steps:
+      - uses: actions/checkout@v4
+
+      # copy docker-compose.yml (+ optional .env) դեպի EC2
+      - name: Copy compose to EC2
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host:     ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key:      ${{ secrets.EC2_SSH_KEY }}
+          source:   "docker-compose.yml"
+          target:   "${{ env.EC2_DIR }}/"
+
+      - name: Upload .env (optional)
+        if: ${{ secrets.ENV_FILE != '' }}
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host:     ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key:      ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            mkdir -p ${{ env.EC2_DIR }}
+            cat > ${{ env.EC2_DIR }}/.env <<'EOF'
+            ${{ secrets.ENV_FILE }}
+            EOF
+
+      - name: Deploy on EC2 (login ECR → compose pull/up)
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host:     ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key:      ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            # ensure docker & compose
+            command -v docker || sudo apt update -y && sudo apt install -y docker.io
+            sudo systemctl enable --now docker
+
+            # ECR login
+            aws ecr get-login-password --region ${{ env.REGION }} | \
+              docker login --username AWS --password-stdin $(echo ${{ env.REPO }} | cut -d/ -f1)
+
+            cd ${{ env.EC2_DIR }}
+            export ECR_REPO_URL=${{ env.REPO }}
+            docker compose pull
+            docker compose up -d --remove-orphans
+            docker compose ps
