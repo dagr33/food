@@ -55,17 +55,21 @@ jobs:
           target:   "${{ env.EC2_DIR }}/"
 
       - name: Upload .env (optional)
-        if: ${{ secrets.ENV_FILE != '' }}
         uses: appleboy/ssh-action@v1.0.3
         with:
           host:     ${{ secrets.EC2_HOST }}
           username: ${{ secrets.EC2_USER }}
           key:      ${{ secrets.EC2_SSH_KEY }}
           script: |
-            mkdir -p ${{ env.EC2_DIR }}
-            cat > ${{ env.EC2_DIR }}/.env <<'EOF'
-            ${{ secrets.ENV_FILE }}
-            EOF
+              if [ -n "${{ secrets.ENV_FILE }}" ]; then
+              mkdir -p /opt/app
+              cat > /opt/app/.env <<'EOF'
+              ${{ secrets.ENV_FILE }}
+               EOF
+                  else
+               echo "ENV_FILE secret is empty; skipping .env upload"
+               fi
+
 
       - name: Deploy on EC2 (login ECR → compose pull/up)
         uses: appleboy/ssh-action@v1.0.3
