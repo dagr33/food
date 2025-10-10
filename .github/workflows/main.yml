@@ -69,6 +69,36 @@ jobs:
                   else
                echo "ENV_FILE secret is empty; skipping .env upload"
                fi
+               - name: Write SSH key
+  run: |
+    cat > ec2_key.pem <<'EOF'
+${{ secrets.EC2_SSH_KEY }}
+EOF
+    chmod 600 ec2_key.pem
+
+- name: Prepare target dir
+  uses: appleboy/ssh-action@v1.0.3
+  with:
+    host:     ${{ secrets.EC2_HOST }}
+    username: ${{ secrets.EC2_USER }}   # ubuntu կամ ec2-user
+    key_path: ec2_key.pem
+    script: |
+      sudo mkdir -p /opt/app
+      sudo chown -R $USER:$USER /opt/app
+      ls -ld /opt/app
+
+# 2) Հիմա copy արա compose-ը դեպի /opt/app
+- name: Copy compose to EC2
+  uses: appleboy/scp-action@v0.1.7
+  with:
+    host:     ${{ secrets.EC2_HOST }}
+    username: ${{ secrets.EC2_USER }}
+    key_path: ec2_key.pem
+    source:   "docker-compose.yaml"   # փոփոխիր, եթե այլ ուղի է
+    target:   "/opt/app/"
+    overwrite: true
+    rm: true
+    debug: true
 
 
       - name: Deploy on EC2 (login ECR → compose pull/up)
