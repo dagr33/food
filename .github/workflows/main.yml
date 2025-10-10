@@ -1,110 +1,68 @@
-name: Build & Deploy to EC2
-
-on:
-  push:
-    branches: ["main"]
-
-env:
-  REGION: ${{ secrets.AWS_REGION }}
-  REPO:   ${{ secrets.ECR_REPO_URL }}   # օրինակ: 123456789012.dkr.ecr.eu-north-1.amazonaws.com/myapp
-  EC2_DIR: /opt/app
-
-jobs:
-  build-and-push:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Configure AWS creds
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region:            ${{ secrets.AWS_REGION }}
-
-      - name: Login to ECR
-        uses: aws-actions/amazon-ecr-login@v2
-
-      - name: Build & push backend
-        run: |
-          set -e
-          docker build -t "$REPO:backend-latest" ./backend
-          docker push "$REPO:backend-latest"
-
-      - name: Build & push frontend
-        if: ${{ hashFiles('frontend/**') != '' }}
-        run: |
-          set -e
-          docker build -t "$REPO:frontend-latest" ./frontend
-          docker push "$REPO:frontend-latest"
-
   deploy:
     runs-on: ubuntu-latest
     needs: build-and-push
     steps:
       - uses: actions/checkout@v4
 
-      # 1) գրենք private key-ը ֆայլի մեջ (ճիշտ heredoc + CRLF fix + fingerprint check)
+      # 1) Write key → absolute path + verify
       - name: Write SSH key
         run: |
+          KEY="${GITHUB_WORKSPACE}/ec2_key.pem"
           umask 177
-          cat > ec2_key.pem <<'EOF'
-          ${{ secrets.EC2_SSH_KEY }}
-          EOF
-          sed -i 's/\r$//' ec2_key.pem
-          ssh-keygen -l -f ec2_key.pem
+          cat > "$KEY" <<'EOF'
+         ${{ secrets.EC2_SSH_KEY }}
+         EOF
+          # strip CRLF if any
+          sed -i 's/\r$//' "$KEY"
+          ls -l "$KEY"
+          # quick sanity: should print a fingerprint
+          ssh-keygen -l -f "$KEY"
 
-      # 2) smoke-test — ցանց/բանալին OK է արդյոք
+      # 2) Smoke SSH (note: key_path is absolute)
       - name: Smoke SSH
         uses: appleboy/ssh-action@v1.0.3
         with:
           host:     ${{ secrets.EC2_HOST }}
-          username: ${{ secrets.EC2_USER }}   # ubuntu կամ ec2-user
-          key_path: ec2_key.pem
+          username: ${{ secrets.EC2_USER }}
+          key_path: ${{ github.workspace }}/ec2_key.pem
           script: "echo OK && uname -a"
           timeout: 180s
 
-      # 3) պատրաստել թիրախ պապկան և իրավունքները
-      - name: Prepare target dir
+      # 3) Prepare target dir (permissions + tar)
+      - name: Prepare /opt/app
         uses: appleboy/ssh-action@v1.0.3
         with:
           host:     ${{ secrets.EC2_HOST }}
           username: ${{ secrets.EC2_USER }}
-          key_path: ec2_key.pem
+          key_path: ${{ github.workspace }}/ec2_key.pem
           script: |
             set -e
-            sudo mkdir -p "${{ env.EC2_DIR }}"
-            sudo chown -R $USER:$USER "${{ env.EC2_DIR }}"
-            # օգտակար, եթե remote tar չկա
+            sudo mkdir -p /opt/app
+            sudo chown -R $USER:$USER /opt/app
             sudo apt-get update -y && sudo apt-get install -y tar
-            ls -ld "${{ env.EC2_DIR }}"
 
-      # 4) հիմա copy ենք անում compose-ը (ՈւՇԱԴՐՈՒԹՅՈՒՆ՝ key_path, ոչ թե key)
+      # 4) Copy compose (use key_path, not key)
       - name: Copy compose to EC2
         uses: appleboy/scp-action@v0.1.7
         with:
           host:     ${{ secrets.EC2_HOST }}
           username: ${{ secrets.EC2_USER }}
-          key_path: ec2_key.pem
+          key_path: ${{ github.workspace }}/ec2_key.pem
           source:   "docker-compose.yaml"
-          target:   "${{ env.EC2_DIR }}/"
+          target:   "/opt/app/"
           overwrite: true
           rm: true
           debug: true
-          timeout: "180s"
 
-  
-
-      # 6) deploy — ECR login → compose pull/up
+      # 5) Deploy
       - name: Deploy on EC2
         uses: appleboy/ssh-action@v1.0.3
         with:
           host:     ${{ secrets.EC2_HOST }}
           username: ${{ secrets.EC2_USER }}
-          key_path: ec2_key.pem
+          key_path: ${{ github.workspace }}/ec2_key.pem
           script: |
             set -e
-            # ensure docker & compose
             if ! command -v docker >/dev/null; then
               sudo apt-get update -y
               sudo apt-get install -y docker.io
@@ -117,14 +75,10 @@ jobs:
                 -o $DOCKER_CONFIG/cli-plugins/docker-compose
               chmod +x $DOCKER_CONFIG/cli-plugins/docker-compose
             fi
-
-            # ECR login
-            REGISTRY_HOST="${{ env.REPO }}"
-            REGISTRY_HOST="${REGISTRY_HOST%%/*}"
+            REGISTRY_HOST="${{ env.REPO }}"; REGISTRY_HOST="${REGISTRY_HOST%%/*}"
             aws ecr get-login-password --region "${{ env.REGION }}" \
               | docker login --username AWS --password-stdin "$REGISTRY_HOST"
-
-            cd "${{ env.EC2_DIR }}"
+            cd /opt/app
             export ECR_REPO_URL="${{ env.REPO }}"
             docker compose pull
             docker compose up -d --remove-orphans
