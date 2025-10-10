@@ -6,7 +6,7 @@ on:
 
 env:
   REGION: ${{ secrets.AWS_REGION }}
-  REPO:   ${{ secrets.ECR_REPO_URL }}   # e.g. 123456789012.dkr.ecr.eu-north-1.amazonaws.com/myapp
+  REPO:   ${{ secrets.ECR_REPO_URL }}   # օրինակ: 123456789012.dkr.ecr.eu-central-1.amazonaws.com/myapp
   EC2_DIR: /opt/app
 
 jobs:
@@ -25,19 +25,18 @@ jobs:
       - name: Login to ECR
         uses: aws-actions/amazon-ecr-login@v2
 
+      # Backend image
       - name: Build & push backend
         run: |
-          set -e
-          docker build -t "$REPO:backend-latest" ./backend
-          docker push "$REPO:backend-latest"
+          docker build -t $REPO:backend-latest ./backend
+          docker push $REPO:backend-latest
 
+      # Frontend image (եթե front-ը container-ով ես տալիս)
       - name: Build & push frontend
         if: ${{ hashFiles('frontend/**') != '' }}
         run: |
-          set -e
-          # եթե SPA ես սերվում nginx-ով և proxy ես անում /api → թող build-arg-ը /api
-          docker build -t "$REPO:frontend-latest" ./frontend
-          docker push "$REPO:frontend-latest"
+          docker build -t $REPO:frontend-latest ./frontend
+          docker push $REPO:frontend-latest
 
   deploy:
     runs-on: ubuntu-latest
@@ -45,80 +44,50 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Write SSH key
-        run: |
-          cat > ec2_key.pem <<'EOF'
-          ${{ secrets.EC2_SSH_KEY }}             
-          EOF
-          chmod 600 ec2_key.pem
-
-      # ✅ Smoke-test նախքան copy/deploy
-      - name: Smoke SSH
-        uses: appleboy/ssh-action@v1.0.3
-        with:
-          host:     ${{ secrets.EC2_HOST }}
-          username: ${{ secrets.EC2_USER }}
-          key_path: ec2_key.pem
-          script: "echo OK && uname -a"
-          timeout: 180s
-
+      # copy docker-compose.yml (+ optional .env) դեպի EC2
       - name: Copy compose to EC2
         uses: appleboy/scp-action@v0.1.7
         with:
           host:     ${{ secrets.EC2_HOST }}
           username: ${{ secrets.EC2_USER }}
-          key_path: ec2_key.pem
-          source:   "docker-compose.yaml"   # փոխիր, եթե այլ ուղի է
+          key:      ${{ secrets.EC2_SSH_KEY }}
+          source:   "docker-compose.yaml"
           target:   "${{ env.EC2_DIR }}/"
-          timeout:  "180s"
 
       - name: Upload .env (optional)
-        if: ${{ secrets.ENV_FILE != '' && secrets.ENV_FILE != null }}
         uses: appleboy/ssh-action@v1.0.3
         with:
           host:     ${{ secrets.EC2_HOST }}
           username: ${{ secrets.EC2_USER }}
-          key_path: ec2_key.pem
+          key:      ${{ secrets.EC2_SSH_KEY }}
           script: |
-            set -e
-            mkdir -p "${{ env.EC2_DIR }}"
-            cat > "${{ env.EC2_DIR }}/.env" <<'EOF'
-           ${{ secrets.ENV_FILE }}
-           EOF
-            ls -la "${{ env.EC2_DIR }}"
+              if [ -n "${{ secrets.ENV_FILE }}" ]; then
+              mkdir -p /opt/app
+              cat > /opt/app/.env <<'EOF'
+              ${{ secrets.ENV_FILE }}
+               EOF
+                  else
+               echo "ENV_FILE secret is empty; skipping .env upload"
+               fi
+
 
       - name: Deploy on EC2 (login ECR → compose pull/up)
         uses: appleboy/ssh-action@v1.0.3
         with:
           host:     ${{ secrets.EC2_HOST }}
           username: ${{ secrets.EC2_USER }}
-          key_path: ec2_key.pem
+          key:      ${{ secrets.EC2_SSH_KEY }}
           script: |
-            set -e
             # ensure docker & compose
-            if ! command -v docker >/dev/null; then
-              sudo apt-get update -y
-              sudo apt-get install -y docker.io
-              sudo systemctl enable --now docker
-            fi
-            if ! docker compose version >/dev/null 2>&1; then
-              DOCKER_CONFIG=${DOCKER_CONFIG:-$HOME/.docker}
-              mkdir -p $DOCKER_CONFIG/cli-plugins
-              curl -sSL https://github.com/docker/compose/releases/download/v2.29.7/docker-compose-linux-x86_64 \
-                -o $DOCKER_CONFIG/cli-plugins/docker-compose
-              chmod +x $DOCKER_CONFIG/cli-plugins/docker-compose
-            fi
+            command -v docker || sudo apt update -y && sudo apt install -y docker.io
+            sudo systemctl enable --now docker
 
             # ECR login
-            REGISTRY="${{ env.REPO }}"
-            REGISTRY_HOST="${REGISTRY%%/*}"
-            aws ecr get-login-password --region "${{ env.REGION }}" | \
-              docker login --username AWS --password-stdin "$REGISTRY_HOST"
+            aws ecr get-login-password --region ${{ env.REGION }} | \
+              docker login --username AWS --password-stdin $(echo ${{ env.REPO }} | cut -d/ -f1)
 
-            cd "${{ env.EC2_DIR }}"
-            export ECR_REPO_URL="${{ env.REPO }}"
-
-            # քաշում ու վերագործարկում ենք services-ը
+            cd ${{ env.EC2_DIR }}
+            export ECR_REPO_URL=${{ env.REPO }}
             docker compose pull
             docker compose up -d --remove-orphans
             docker compose ps
