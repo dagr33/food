@@ -54,21 +54,15 @@ jobs:
           source:   "docker-compose.yaml"
           target:   "${{ env.EC2_DIR }}/"
 
-      - name: Upload .env (optional)
-        uses: appleboy/ssh-action@v1.0.3
-        with:
-          host:     ${{ secrets.EC2_HOST }}
-          username: ${{ secrets.EC2_USER }}
-          key:      ${{ secrets.EC2_SSH_KEY }}
-          script: |
-              if [ -n "${{ secrets.ENV_FILE }}" ]; then
-              mkdir -p /opt/app
-              cat > /opt/app/.env <<'EOF'
-              ${{ secrets.ENV_FILE }}
-               EOF
-                  else
-               echo "ENV_FILE secret is empty; skipping .env upload"
-               fi
+      - name: Write SSH key (from secret)
+        run: |
+            umask 177
+            cat > ec2_key.pem <<'EOF'
+            ${{ secrets.EC2_SSH_KEY }}
+              EOF
+              sed -i 's/\r$//' ec2_key.pem
+              ssh-keygen -l -f ec2_key.pem
+
 
 
       - name: Deploy on EC2 (login ECR → compose pull/up)
