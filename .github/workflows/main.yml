@@ -72,8 +72,8 @@ jobs:
                - name: Write SSH key
   run: |
     cat > ec2_key.pem <<'EOF'
-${{ secrets.EC2_SSH_KEY }}
-EOF
+    ${{ secrets.EC2_SSH_KEY }}
+    EOF
     chmod 600 ec2_key.pem
 
     - name: Prepare target dir
