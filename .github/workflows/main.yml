@@ -6,7 +6,7 @@ on:
 
 env:
   REGION: ${{ secrets.AWS_REGION }}
-  REPO:   ${{ secrets.ECR_REPO_URL }}   # օրինակ: 123456789012.dkr.ecr.eu-central-1.amazonaws.com/myapp
+  REPO:   ${{ secrets.ECR_REPO_URL }}   # օրինակ: 123456789012.dkr.ecr.eu-north-1.amazonaws.com/myapp
   EC2_DIR: /opt/app
 
 jobs:
@@ -25,18 +25,18 @@ jobs:
       - name: Login to ECR
         uses: aws-actions/amazon-ecr-login@v2
 
-      # Backend image
       - name: Build & push backend
         run: |
-          docker build -t $REPO:backend-latest ./backend
-          docker push $REPO:backend-latest
+          set -e
+          docker build -t "$REPO:backend-latest" ./backend
+          docker push "$REPO:backend-latest"
 
-      # Frontend image (եթե front-ը container-ով ես տալիս)
       - name: Build & push frontend
         if: ${{ hashFiles('frontend/**') != '' }}
         run: |
-          docker build -t $REPO:frontend-latest ./frontend
-          docker push $REPO:frontend-latest
+          set -e
+          docker build -t "$REPO:frontend-latest" ./frontend
+          docker push "$REPO:frontend-latest"
 
   deploy:
     runs-on: ubuntu-latest
@@ -44,80 +44,94 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # copy docker-compose.yml (+ optional .env) դեպի EC2
+      # միշտ գրի private key-ը որպես ֆայլ և օգտ. key_path
+      - name: Write SSH key
+        run: |
+          cat > ec2_key.pem <<'EOF'
+${{ secrets.EC2_SSH_KEY }}
+EOF
+          chmod 600 ec2_key.pem
+
+      # ցանկության դեպքում՝ արագ smoke test
+      - name: Smoke SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host:     ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}     # ubuntu կամ ec2-user
+          key_path: ec2_key.pem
+          script: "echo OK && uname -a"
+          timeout: 180s
+
+      - name: Prepare target dir
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host:     ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key_path: ec2_key.pem
+          script: |
+            set -e
+            sudo mkdir -p "${{ env.EC2_DIR }}"
+            sudo chown -R $USER:$USER "${{ env.EC2_DIR }}"
+            ls -ld "${{ env.EC2_DIR }}"
+
       - name: Copy compose to EC2
         uses: appleboy/scp-action@v0.1.7
         with:
           host:     ${{ secrets.EC2_HOST }}
           username: ${{ secrets.EC2_USER }}
-          key:      ${{ secrets.EC2_SSH_KEY }}
-          source:   "docker-compose.yaml"
+          key_path: ec2_key.pem
+          source:   "docker-compose.yaml"   # փոխիր, եթե repo-ում անունը այլ է
           target:   "${{ env.EC2_DIR }}/"
+          overwrite: true
+          rm: true
+          debug: true
+          timeout: "180s"
 
       - name: Upload .env (optional)
+        if: ${{ secrets.ENV_FILE != '' && secrets.ENV_FILE != null }}
         uses: appleboy/ssh-action@v1.0.3
         with:
           host:     ${{ secrets.EC2_HOST }}
           username: ${{ secrets.EC2_USER }}
-          key:      ${{ secrets.EC2_SSH_KEY }}
-          script: |
-              if [ -n "${{ secrets.ENV_FILE }}" ]; then
-              mkdir -p /opt/app
-              cat > /opt/app/.env <<'EOF'
-              ${{ secrets.ENV_FILE }}
-               EOF
-                  else
-               echo "ENV_FILE secret is empty; skipping .env upload"
-               fi
-               - name: Write SSH key
-  run: |
-    cat > ec2_key.pem <<'EOF'
-    ${{ secrets.EC2_SSH_KEY }}
-    EOF
-    chmod 600 ec2_key.pem
-
-    - name: Prepare target dir
-      uses: appleboy/ssh-action@v1.0.3
-      with:
-        host:     ${{ secrets.EC2_HOST }}
-        username: ${{ secrets.EC2_USER }}   # ubuntu կամ ec2-user
-        key_path: ec2_key.pem
-        script: |
-           sudo mkdir -p /opt/app
-           sudo chown -R $USER:$USER /opt/app
-           ls -ld /opt/app
-
-# 2) Հիմա copy արա compose-ը դեպի /opt/app
-     - name: Copy compose to EC2
-       uses: appleboy/scp-action@v0.1.7
-       with:
-          host:     ${{ secrets.EC2_HOST }}
-          username: ${{ secrets.EC2_USER }}
           key_path: ec2_key.pem
-          source:   "docker-compose.yaml"   # փոփոխիր, եթե այլ ուղի է
-          target:   "/opt/app/"
-          overwrite: true
-          rm: true
-          debug: true
-
+          script: |
+            set -e
+            mkdir -p "${{ env.EC2_DIR }}"
+            cat > "${{ env.EC2_DIR }}/.env" <<'EOF'
+${{ secrets.ENV_FILE }}
+EOF
+            ls -la "${{ env.EC2_DIR }}"
 
       - name: Deploy on EC2 (login ECR → compose pull/up)
         uses: appleboy/ssh-action@v1.0.3
         with:
           host:     ${{ secrets.EC2_HOST }}
           username: ${{ secrets.EC2_USER }}
-          key:      ${{ secrets.EC2_SSH_KEY }}
+          key_path: ec2_key.pem
           script: |
+            set -e
             # ensure docker & compose
-            command -v docker || sudo apt update -y && sudo apt install -y docker.io
-            sudo systemctl enable --now docker
+            if ! command -v docker >/dev/null; then
+              sudo apt-get update -y
+              sudo apt-get install -y docker.io
+              sudo systemctl enable --now docker
+            fi
+            if ! docker compose version >/dev/null 2>&1; then
+              DOCKER_CONFIG=${DOCKER_CONFIG:-$HOME/.docker}
+              mkdir -p $DOCKER_CONFIG/cli-plugins
+              curl -sSL https://github.com/docker/compose/releases/download/v2.29.7/docker-compose-linux-x86_64 \
+                -o $DOCKER_CONFIG/cli-plugins/docker-compose
+              chmod +x $DOCKER_CONFIG/cli-plugins/docker-compose
+            fi
 
             # ECR login
-            aws ecr get-login-password --region ${{ env.REGION }} | \
-              docker login --username AWS --password-stdin $(echo ${{ env.REPO }} | cut -d/ -f1)
+            REGISTRY_HOST="${{ env.REPO }}"
+            REGISTRY_HOST="${REGISTRY_HOST%%/*}"
+            aws ecr get-login-password --region "${{ env.REGION }}" \
+              | docker login --username AWS --password-stdin "$REGISTRY_HOST"
 
-            cd ${{ env.EC2_DIR }}
-            export ECR_REPO_URL=${{ env.REPO }}
+            cd "${{ env.EC2_DIR }}"
+            export ECR_REPO_URL="${{ env.REPO }}"
             docker compose pull
             docker compose up -d --remove-orphans
             docker compose ps
