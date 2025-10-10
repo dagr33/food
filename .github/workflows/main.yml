@@ -6,171 +6,119 @@ on:
 
 env:
   REGION: ${{ secrets.AWS_REGION }}
-  REPO: ${{ secrets.ECR_REPO_URL }}
+  REPO:   ${{ secrets.ECR_REPO_URL }}   # e.g. 123456789012.dkr.ecr.eu-north-1.amazonaws.com/myapp
   EC2_DIR: /opt/app
 
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Configure AWS credentials
+      - name: Configure AWS creds
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ secrets.AWS_REGION }}
+          aws-region:            ${{ secrets.AWS_REGION }}
 
-      - name: Login to Amazon ECR
-        id: login-ecr
+      - name: Login to ECR
         uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Build and push backend image
+      - name: Build & push backend
         run: |
           set -e
-          echo "Building backend image..."
-          docker build -t ${{ env.REPO }}:backend-latest ./backend
-          echo "Pushing backend image..."
-          docker push ${{ env.REPO }}:backend-latest
-          echo "✓ Backend image pushed successfully"
+          docker build -t "$REPO:backend-latest" ./backend
+          docker push "$REPO:backend-latest"
 
-      - name: Check if frontend exists
-        id: check-frontend
-        run: |
-          if [ -d "frontend" ] && [ "$(ls -A frontend)" ]; then
-            echo "exists=true" >> $GITHUB_OUTPUT
-          else
-            echo "exists=false" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Build and push frontend image
-        if: steps.check-frontend.outputs.exists == 'true'
+      - name: Build & push frontend
+        if: ${{ hashFiles('frontend/**') != '' }}
         run: |
           set -e
-          echo "Building frontend image..."
-          docker build -t ${{ env.REPO }}:frontend-latest ./frontend
-          echo "Pushing frontend image..."
-          docker push ${{ env.REPO }}:frontend-latest
-          echo "✓ Frontend image pushed successfully"
+          # եթե SPA ես սերվում nginx-ով և proxy ես անում /api → թող build-arg-ը /api
+          docker build -t "$REPO:frontend-latest" ./frontend
+          docker push "$REPO:frontend-latest"
 
   deploy:
     runs-on: ubuntu-latest
     needs: build-and-push
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Write SSH private key
+      - name: Write SSH key
         run: |
-          mkdir -p ~/.ssh
-          echo "${{ secrets.EC2_SSH_KEY }}" > ~/.ssh/ec2_key.pem
-          chmod 600 ~/.ssh/ec2_key.pem
-          cat ~/.ssh/ec2_key.pem
+          cat > ec2_key.pem <<'EOF'
+          ${{ secrets.EC2_SSH_KEY }}             
+          EOF
+          chmod 600 ec2_key.pem
 
-      - name: Add EC2 to known hosts
-        run: |
-          ssh-keyscan -H ${{ secrets.EC2_HOST }} >> ~/.ssh/known_hosts || true
+      # ✅ Smoke-test նախքան copy/deploy
+      - name: Smoke SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host:     ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key_path: ec2_key.pem
+          script: "echo OK && uname -a"
+          timeout: 180s
 
-      - name: Test SSH connection
-        run: |
-          ssh -i ~/.ssh/ec2_key.pem -o StrictHostKeyChecking=no \
-            ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} \
-            "echo 'SSH connection successful' && uname -a"
+      - name: Copy compose to EC2
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host:     ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key_path: ec2_key.pem
+          source:   "docker-compose.yaml"   # փոխիր, եթե այլ ուղի է
+          target:   "${{ env.EC2_DIR }}/"
+          timeout:  "180s"
 
-      - name: Create application directory on EC2
-        run: |
-          ssh -i ~/.ssh/ec2_key.pem -o StrictHostKeyChecking=no \
-            ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} << 'ENDSSH'
-          set -e
-          sudo mkdir -p ${{ env.EC2_DIR }}
-          sudo chown -R $USER:$USER ${{ env.EC2_DIR }}
-          echo "✓ Directory created: ${{ env.EC2_DIR }}"
-          ls -ld ${{ env.EC2_DIR }}
-          ENDSSH
+      - name: Upload .env (optional)
+        if: ${{ secrets.ENV_FILE != '' && secrets.ENV_FILE != null }}
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host:     ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key_path: ec2_key.pem
+          script: |
+            set -e
+            mkdir -p "${{ env.EC2_DIR }}"
+            cat > "${{ env.EC2_DIR }}/.env" <<'EOF'
+           ${{ secrets.ENV_FILE }}
+           EOF
+            ls -la "${{ env.EC2_DIR }}"
 
-      - name: Copy docker-compose.yaml to EC2
-        run: |
-          scp -i ~/.ssh/ec2_key.pem -o StrictHostKeyChecking=no \
-            docker-compose.yaml \
-            ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}:${{ env.EC2_DIR }}/
-      - name: Deploy application on EC2
-        run: |
-          ssh -i ~/.ssh/ec2_key.pem -o StrictHostKeyChecking=no \
-            ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} << 'ENDSSH'
-          set -e
-          
-          # Install Docker if not present
-          if ! command -v docker &> /dev/null; then
-            echo "Installing Docker..."
-            sudo apt-get update
-            sudo apt-get install -y docker.io
-            sudo systemctl enable docker
-            sudo systemctl start docker
-            sudo usermod -aG docker $USER
-          fi
-          
-          # Install Docker Compose if not present
-          if ! docker compose version &> /dev/null; then
-            echo "Installing Docker Compose..."
-            sudo mkdir -p /usr/local/lib/docker/cli-plugins
-            sudo curl -SL https://github.com/docker/compose/releases/download/v2.29.7/docker-compose-linux-x86_64 \
-              -o /usr/local/lib/docker/cli-plugins/docker-compose
-            sudo chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
-          fi
-          
-          # Install AWS CLI if not present
-          if ! command -v aws &> /dev/null; then
-            echo "Installing AWS CLI..."
-            sudo apt-get install -y awscli
-          fi
-          
-          # Configure AWS credentials
-          export AWS_ACCESS_KEY_ID="${{ secrets.AWS_ACCESS_KEY_ID }}"
-          export AWS_SECRET_ACCESS_KEY="${{ secrets.AWS_SECRET_ACCESS_KEY }}"
-          export AWS_DEFAULT_REGION="${{ secrets.AWS_REGION }}"
-          
-          # Login to ECR
-          echo "Logging in to ECR..."
-          REGISTRY_HOST=$(echo "${{ env.REPO }}" | cut -d'/' -f1)
-          aws ecr get-login-password --region ${{ env.REGION }} | \
-            docker login --username AWS --password-stdin $REGISTRY_HOST
-          
-          # Navigate to app directory
-          cd ${{ env.EC2_DIR }}
-          
-          # Set environment variables for compose
-          export ECR_REPO_URL="${{ env.REPO }}"
-          
-          # Pull latest images
-          echo "Pulling latest images..."
-          docker compose pull
-          
-          # Deploy with docker compose
-          echo "Starting containers..."
-          docker compose up -d --remove-orphans
-          
-          # Show running containers
-          echo "✓ Deployment complete"
-          docker compose ps
-          
-          # Cleanup old images
-          echo "Cleaning up old images..."
-          docker image prune -af --filter "until=24h" || true
-          ENDSSH
+      - name: Deploy on EC2 (login ECR → compose pull/up)
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host:     ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key_path: ec2_key.pem
+          script: |
+            set -e
+            # ensure docker & compose
+            if ! command -v docker >/dev/null; then
+              sudo apt-get update -y
+              sudo apt-get install -y docker.io
+              sudo systemctl enable --now docker
+            fi
+            if ! docker compose version >/dev/null 2>&1; then
+              DOCKER_CONFIG=${DOCKER_CONFIG:-$HOME/.docker}
+              mkdir -p $DOCKER_CONFIG/cli-plugins
+              curl -sSL https://github.com/docker/compose/releases/download/v2.29.7/docker-compose-linux-x86_64 \
+                -o $DOCKER_CONFIG/cli-plugins/docker-compose
+              chmod +x $DOCKER_CONFIG/cli-plugins/docker-compose
+            fi
 
-      - name: Verify deployment
-        run: |
-          ssh -i ~/.ssh/ec2_key.pem -o StrictHostKeyChecking=no \
-            ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} << 'ENDSSH'
-          cd ${{ env.EC2_DIR }}
-          echo "=== Container Status ==="
-          docker compose ps
-          echo "=== Container Logs (last 20 lines) ==="
-          docker compose logs --tail=20
-          ENDSSH
+            # ECR login
+            REGISTRY="${{ env.REPO }}"
+            REGISTRY_HOST="${REGISTRY%%/*}"
+            aws ecr get-login-password --region "${{ env.REGION }}" | \
+              docker login --username AWS --password-stdin "$REGISTRY_HOST"
 
-      - name: Cleanup SSH key
-        if: always()
-        run: rm -f ~/.ssh/ec2_key.pem
+            cd "${{ env.EC2_DIR }}"
+            export ECR_REPO_URL="${{ env.REPO }}"
+
+            # քաշում ու վերագործարկում ենք services-ը
+            docker compose pull
+            docker compose up -d --remove-orphans
+            docker compose ps
