@@ -98,8 +98,8 @@ jobs:
             set -e
             mkdir -p "${{ env.EC2_DIR }}"
             cat > "${{ env.EC2_DIR }}/.env" <<'EOF'
-${{ secrets.ENV_FILE }}
-EOF
+            ${{ secrets.ENV_FILE }}
+            EOF
             ls -la "${{ env.EC2_DIR }}"
 
       - name: Deploy on EC2 (login ECR → compose pull/up)
