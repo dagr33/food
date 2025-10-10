@@ -4,21 +4,17 @@
     steps:
       - uses: actions/checkout@v4
 
-      # 1) Write key → absolute path + verify
       - name: Write SSH key
         run: |
           KEY="${GITHUB_WORKSPACE}/ec2_key.pem"
           umask 177
           cat > "$KEY" <<'EOF'
-         ${{ secrets.EC2_SSH_KEY }}
-         EOF
-          # strip CRLF if any
+          ${{ secrets.EC2_SSH_KEY }}
+       EOF
           sed -i 's/\r$//' "$KEY"
           ls -l "$KEY"
-          # quick sanity: should print a fingerprint
           ssh-keygen -l -f "$KEY"
 
-      # 2) Smoke SSH (note: key_path is absolute)
       - name: Smoke SSH
         uses: appleboy/ssh-action@v1.0.3
         with:
@@ -28,7 +24,6 @@
           script: "echo OK && uname -a"
           timeout: 180s
 
-      # 3) Prepare target dir (permissions + tar)
       - name: Prepare /opt/app
         uses: appleboy/ssh-action@v1.0.3
         with:
@@ -41,7 +36,6 @@
             sudo chown -R $USER:$USER /opt/app
             sudo apt-get update -y && sudo apt-get install -y tar
 
-      # 4) Copy compose (use key_path, not key)
       - name: Copy compose to EC2
         uses: appleboy/scp-action@v0.1.7
         with:
@@ -53,8 +47,6 @@
           overwrite: true
           rm: true
           debug: true
-
-      # 5) Deploy
       - name: Deploy on EC2
         uses: appleboy/ssh-action@v1.0.3
         with:
