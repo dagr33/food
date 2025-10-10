@@ -93,20 +93,7 @@ jobs:
           debug: true
           timeout: "180s"
 
-      # 5) (ըստ ցանկության) .env-ը գրենք սերվերի վրա
-      - name: Upload .env (optional)
-        if: ${{ secrets.ENV_FILE != '' && secrets.ENV_FILE != null }}
-        uses: appleboy/ssh-action@v1.0.3
-        with:
-          host:     ${{ secrets.EC2_HOST }}
-          username: ${{ secrets.EC2_USER }}
-          key_path: ec2_key.pem
-          script: |
-            set -e
-            cat > "${{ env.EC2_DIR }}/.env" <<'EOF'
-            ${{ secrets.ENV_FILE }} 
-            EOF
-            ls -la "${{ env.EC2_DIR }}"
+  
 
       # 6) deploy — ECR login → compose pull/up
       - name: Deploy on EC2
